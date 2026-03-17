@@ -84,7 +84,7 @@ process.on('SIGTERM', () => {
 
 async function main() {
   await new Promise((resolve) => {
-    const starter = spawn('zsh', ['-lc', '../pollerctl start || true'], {
+    const starter = spawn(process.execPath, [path.resolve(__dirname, '../pollerctl.mjs'), 'start'], {
       cwd: __dirname,
       stdio: 'inherit',
     })

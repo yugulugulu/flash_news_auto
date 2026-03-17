@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "poller:start": "../pollerctl start || true",
-    "poller:stop": "../pollerctl stop || true",
+    "poller:start": "node ../pollerctl.mjs start || true",
+    "poller:stop": "node ../pollerctl.mjs stop || true",
     "dev:api": "npm run poller:start && node server.mjs",
     "dev:web": "vite --host 0.0.0.0",
     "dev:all": "node dev-all.mjs",

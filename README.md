@@ -164,7 +164,7 @@ npm run dev:api
 ```
 
 这个命令现在会先自动执行一次：
-- `../pollerctl start`
+- `node ../pollerctl.mjs start`
 
 也就是说：**启动后端 API 时，会顺手拉起快讯轮询**，用户不需要再单独执行 `./pollerctl start`。
 
@@ -262,7 +262,7 @@ npm run build
 ## 注意事项
 
 1. 本项目现在已把关键硬编码项目路径改为**相对路径/脚本目录推导**。
-2. 但如果你的环境依赖外部工具（例如 `bb-browser`、Claude CLI），仍需你自己安装。
+2. 轮询控制层已改为 Node 版，但 AI 改写和部分导出能力仍依赖外部环境；若缺少依赖，轮询可能能跑，但 AI 改写/导出会失败。
 3. `model_config.json` 可能包含敏感信息，**不要提交到公共仓库**。
 4. 仓库建议提交：
    - 源码
@@ -286,6 +286,16 @@ git tag v1.0
 ```bash
 git remote add origin <your-repo-url>
 git push -u origin main
+git push origin v1.0
+```
+
+---
+
+## License
+
+如果你准备公开发布，建议补一个 LICENSE 文件（如 MIT）。
+目前本项目未自动添加许可证，请按你的发布需求自行决定。
+in main
 git push origin v1.0
 ```
 
