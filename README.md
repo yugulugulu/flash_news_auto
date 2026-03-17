@@ -163,6 +163,11 @@ cd dashboard
 npm run dev:api
 ```
 
+这个命令现在会先自动执行一次：
+- `../pollerctl start`
+
+也就是说：**启动后端 API 时，会顺手拉起快讯轮询**，用户不需要再单独执行 `./pollerctl start`。
+
 默认地址：
 - `http://localhost:8787`
 
@@ -178,6 +183,21 @@ npm run dev -- --host 0.0.0.0
 默认地址通常是：
 - `http://localhost:5173`
 - 如果 5173 被占用，Vite 会自动切到下一个端口，例如 `5174`
+
+### 一键全开（推荐）
+
+如果你希望前端、后端、轮询一起启动，直接执行：
+
+```bash
+cd dashboard
+npm run dev:all
+```
+
+它会自动：
+- 启动轮询
+- 启动 Dashboard API
+- 启动前端页面
+- 在你按下 `Ctrl + C` 时，一并把前端、API、轮询都停干净
 
 ---
 

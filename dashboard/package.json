@@ -5,8 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "node server.mjs",
-    "dev:all": "concurrently \"npm:dev:api\" \"npm:dev\"",
+    "poller:start": "../pollerctl start || true",
+    "poller:stop": "../pollerctl stop || true",
+    "dev:api": "npm run poller:start && node server.mjs",
+    "dev:web": "vite --host 0.0.0.0",
+    "dev:all": "node dev-all.mjs",
+    "stop:all": "npm run poller:stop",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
