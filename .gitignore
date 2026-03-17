@@ -1,0 +1,24 @@
+# Runtime data
+*.pid
+*.log
+*.lock
+.DS_Store
+
+# Local state / outputs
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+tab_state.json
+word_records_tmp.json
+push_records_v2.docx
+
+# Local config with secrets
+model_config.json
+
+# Optional local env files
+.env
+.env.*
+
+# OS / editors
+.vscode/
+.idea/

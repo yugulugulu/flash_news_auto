@@ -1,0 +1,7 @@
+{
+  "provider": "doubao",
+  "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+  "apiKey": "",
+  "model": "",
+  "enabled": false
+}

@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$PROJECT_DIR/flash_news_v2.mjs"
+PID_FILE="$PROJECT_DIR/flash_news_v2.pid"
+LOG_FILE="$PROJECT_DIR/flash_news_v2.log"
+LOCK_FILE="$PROJECT_DIR/.poller.lock"
+TAB_STATE_FILE="$PROJECT_DIR/tab_state.json"
+
+URL_BLOCKBEATS="https://www.theblockbeats.info/newsflash"
+URL_TECHFLOW="https://www.techflowpost.com/zh-CN/newsletter"
+URL_ODAILY="https://www.odaily.news/zh-CN/newsflash"
+BB_BROWSER_DIR="${HOME}/.bb-browser/browser"
+
+is_running() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    return 1
+  fi
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+close_tabs_from_state() {
+  if [[ ! -f "$TAB_STATE_FILE" ]]; then
+    return 0
+  fi
+  while IFS= read -r tab_id; do
+    [[ -z "$tab_id" ]] && continue
+    if [[ "${BB_OPENCLAW:-0}" == "1" || "${BB_OPENCLAW:-0}" == "true" ]]; then
+      bb-browser --openclaw --tab "$tab_id" tab close >/dev/null 2>&1 || true
+    else
+      bb-browser --tab "$tab_id" tab close >/dev/null 2>&1 || true
+    fi
+  done < <(node -e "const fs=require('fs');try{const o=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const ids=[o.theblockbeats,o.techflow,o.odaily].filter(Boolean);console.log([...new Set(ids)].join('\n'));}catch{}" "$TAB_STATE_FILE")
+  rm -f "$TAB_STATE_FILE"
+}
+
+clean_runtime_state() {
+  rm -f "$TAB_STATE_FILE" "$LOCK_FILE" "$PID_FILE"
+}
+
+bootstrap_tabs() {
+  local id_bb id_tf id_od
+  local LAST_OPEN_ERR=""
+
+  reset_bb_connection() {
+    rm -f "$BB_BROWSER_DIR/cdp-port" "$BB_BROWSER_DIR/cdp-ws-endpoint" 2>/dev/null || true
+  }
+
+  parse_tab_id() {
+    local out="$1"
+    # 优先按 JSON 结构解析
+    local id
+    id="$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{const o=JSON.parse(s);const c=[o.tabId,o.tab_id,o.id,o.data&&o.data.tabId,o.data&&o.data.tab_id,o.data&&o.data.id,o.result&&o.result.tabId,o.result&&o.result.id].filter(v=>typeof v==="string"&&v.trim());if(c.length){process.stdout.write(c[0]);return;}}catch{}const m=s.match(/Tab ID:\s*(\S+)/i);if(m){process.stdout.write(m[1]);return;}});' 2>/dev/null || true)"
+    printf '%s' "$id"
+  }
+
+  open_one() {
+    local url="$1"
+    local out id
+    id=""
+    if [[ "${BB_OPENCLAW:-0}" == "1" || "${BB_OPENCLAW:-0}" == "true" ]]; then
+      out="$(bb-browser --json --openclaw open "$url" 2>&1 || true)"
+    else
+      out="$(bb-browser --json open "$url" 2>&1 || true)"
+    fi
+    id="$(parse_tab_id "$out")"
+    if [[ -z "$id" ]]; then
+      LAST_OPEN_ERR="$out"
+      echo ""
+      return 1
+    fi
+
+    echo "$id"
+    return 0
+  }
+
+  id_bb="$(open_one "$URL_BLOCKBEATS" || true)"
+  if [[ -z "$id_bb" ]]; then
+    echo "failed to open blockbeats tab after retries"
+    [[ -n "$LAST_OPEN_ERR" ]] && echo "$LAST_OPEN_ERR"
+    return 1
+  fi
+
+  id_tf="$(open_one "$URL_TECHFLOW" || true)"
+  if [[ -z "$id_tf" ]]; then
+    echo "failed to open techflow tab after retries"
+    [[ -n "$LAST_OPEN_ERR" ]] && echo "$LAST_OPEN_ERR"
+    return 1
+  fi
+
+  id_od="$(open_one "$URL_ODAILY" || true)"
+  if [[ -z "$id_od" ]]; then
+    echo "failed to open odaily tab after retries"
+    [[ -n "$LAST_OPEN_ERR" ]] && echo "$LAST_OPEN_ERR"
+    return 1
+  fi
+
+  if [[ "$id_bb" == "$id_tf" || "$id_bb" == "$id_od" || "$id_tf" == "$id_od" ]]; then
+    echo "tabs are not unique, aborting start"
+    return 1
+  fi
+
+  cat > "$TAB_STATE_FILE" <<EOF
+{
+  "theblockbeats": "$id_bb",
+  "techflow": "$id_tf",
+  "odaily": "$id_od"
+}
+EOF
+}
+
+tabs() {
+  if [[ ! -f "$TAB_STATE_FILE" ]]; then
+    echo "tab_state missing"
+    return 1
+  fi
+  node -e "const fs=require('fs');const p=process.argv[1];const o=JSON.parse(fs.readFileSync(p,'utf8'));for(const k of ['theblockbeats','techflow','odaily']){if(o[k])console.log(k+':'+o[k]);}" "$TAB_STATE_FILE" | while IFS=: read -r media tabid; do
+    if [[ "${BB_OPENCLAW:-0}" == "1" || "${BB_OPENCLAW:-0}" == "true" ]]; then
+      url="$(bb-browser --openclaw --tab "$tabid" eval 'location.href' 2>/dev/null | tr -d '\"' || true)"
+    else
+      url="$(bb-browser --tab "$tabid" eval 'location.href' 2>/dev/null | tr -d '\"' || true)"
+    fi
+    echo "$media tab=$tabid url=${url:-N/A}"
+  done
+}
+
+start() {
+  # 兜底：清理所有同名旧进程，防止旧版本并发运行
+  pkill -f "node .*kuaixun_poller.mjs" 2>/dev/null || true
+
+  if is_running; then
+    echo "already running (pid=$(cat "$PID_FILE"))"
+    return 0
+  fi
+  close_tabs_from_state
+  clean_runtime_state
+  if ! bootstrap_tabs; then
+    clean_runtime_state
+    echo "hint: make sure OpenClaw browser is running, then retry ./pollerctl start"
+    return 1
+  fi
+  : > "$LOG_FILE"
+  BB_OPENCLAW="${BB_OPENCLAW:-0}" NO_OPEN="${NO_OPEN:-1}" DISABLE_RUNTIME_REOPEN="${DISABLE_RUNTIME_REOPEN:-1}" nohup node "$SCRIPT" >> "$LOG_FILE" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+  sleep 1
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "started (pid=$pid)"
+  else
+    echo "failed to start, check log: $LOG_FILE"
+    exit 1
+  fi
+}
+
+stop() {
+  # 先全量清理同名进程（不只 pid 文件内那一个）
+  pkill -f "node .*kuaixun_poller.mjs" 2>/dev/null || true
+
+  if is_running; then
+    local pid
+    pid="$(cat "$PID_FILE")"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    echo "stopped"
+  else
+    echo "not running"
+  fi
+  close_tabs_from_state
+  clean_runtime_state
+}
+
+status() {
+  if is_running; then
+    echo "running (pid=$(cat "$PID_FILE"))"
+  else
+    echo "not running"
+  fi
+  if [[ -f "$LOG_FILE" ]]; then
+    echo "--- last log ---"
+    tail -n 3 "$LOG_FILE" || true
+  fi
+}
+
+once() {
+  rm -f "$LOCK_FILE"
+  BB_OPENCLAW="${BB_OPENCLAW:-0}" ONCE=1 node "$SCRIPT"
+}
+
+reset_data() {
+  stop || true
+  cat > "$PROJECT_DIR/kuaixun.json" <<'EOF'
+{
+  "theblockbeats": { "items": [] },
+  "techflow": { "items": [] },
+  "odaily": { "items": [] }
+}
+EOF
+  cat > "$PROJECT_DIR/push_queue.json" <<'EOF'
+{
+  "queue": []
+}
+EOF
+  rm -f "$PROJECT_DIR/word_records_tmp.json" "$PROJECT_DIR/push_records.docx" "$PROJECT_DIR/tab_state.json"
+  : > "$LOG_FILE"
+  echo "data reset done"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./pollerctl <command>
+
+Commands:
+  start      Start daemon
+  stop       Stop daemon
+  restart    Restart daemon
+  status     Show process and last logs
+  tabs       Show current media tab ids and urls
+  once       Run one cycle in foreground
+  logs       Tail log file
+  clean      Clear runtime state (pid/lock/tab_state)
+  reset      Stop and clear json/docx/temp data
+EOF
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) status ;;
+  tabs) tabs ;;
+  once) once ;;
+  logs) tail -f "$LOG_FILE" ;;
+  clean) clean_runtime_state; echo "runtime state cleaned" ;;
+  reset) reset_data ;;
+  *) usage; exit 1 ;;
+esac
