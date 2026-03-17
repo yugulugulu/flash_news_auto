@@ -84,6 +84,7 @@ process.on('SIGTERM', () => {
 })
 
 async function main() {
+  await runPollerCommand('stop')
   await runPollerCommand('start')
   runNode('api', ['server.mjs'], __dirname)
   runViteDev('web', __dirname)

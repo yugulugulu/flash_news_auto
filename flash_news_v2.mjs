@@ -45,11 +45,45 @@ function saveStore(s){ fs.writeFileSync(OUT_FILE, JSON.stringify(s, null, 2)); }
 function keyOf(it){ return it.id ? `${it.media}:${it.id}` : `${it.media}:${it.link || it.title+'@'+it.published_at}`; }
 function mergeItems(store, media, items){
   const exist = store[media].items;
-  const seen = new Set(exist.map(keyOf));
+  const indexByKey = new Map(exist.map((item, index) => [keyOf(item), index]));
   const added=[];
-  for (const it of items){ const k=keyOf(it); if (seen.has(k)) continue; seen.add(k); added.push(it); }
+  let updated=0;
+  for (const it of items){
+    const k = keyOf(it);
+    const hitIndex = indexByKey.get(k);
+    if (hitIndex !== undefined) {
+      const prev = exist[hitIndex];
+      const nextFeatured = Boolean(it.is_featured);
+      const changed =
+        prev.title !== it.title ||
+        prev.summary !== it.summary ||
+        prev.content !== it.content ||
+        prev.link !== it.link ||
+        prev.original_link !== it.original_link ||
+        prev.image_url !== it.image_url ||
+        prev.published_at !== it.published_at ||
+        Boolean(prev.is_featured) !== nextFeatured;
+      if (changed) {
+        exist[hitIndex] = {
+          ...prev,
+          title: it.title,
+          summary: it.summary,
+          content: it.content,
+          link: it.link,
+          original_link: it.original_link,
+          image_url: it.image_url || '',
+          published_at: it.published_at,
+          is_featured: nextFeatured,
+        };
+        updated++;
+      }
+      continue;
+    }
+    indexByKey.set(k, exist.length + added.length);
+    added.push(it);
+  }
   if (added.length) store[media].items = [...added, ...exist];
-  return added;
+  return { added, updated };
 }
 function looksLikeAd(text='') {
   const t = text.toLowerCase();
@@ -64,6 +98,13 @@ function scoreItem(it){
   if (looksLikeAd(t)) s-=5;
   return s;
 }
+
+function pickFirstImageUrl(value='') {
+  const text = String(value || '')
+  const m = text.match(/<img[^>]+src=["']([^"']+)["']/i)
+  return m ? m[1] : ''
+}
+
 function cleanChainThinkText(s='') {
   return String(s)
     .replace(/^(Odaily星球日报讯|BlockBeats\s*消息|深潮\s*TechFlow\s*消息|TechFlow\s*消息|深潮\s*消息)\s*[，,]?/gi,'')
@@ -99,6 +140,7 @@ async function fetchTechflow(){
       content,
       link:`https://www.techflowpost.com/zh-CN/newsletter/${x.id||detail.id}`,
       original_link: detail.url || detail.original_link || '',
+      image_url: detail.image || detail.cover || detail.cover_url || detail.thumb || detail.thumbnail || detail.pic || detail.picture || pickFirstImageUrl(detail.content || '') || pickFirstImageUrl(x.abstract || '') || '',
       is_featured:Boolean(x.is_hot || detail.is_hot || false),
       published_at: detail.created_at ? toBJT(Date.parse(detail.created_at)) : ''
     });
@@ -115,7 +157,8 @@ async function fetchOdaily(){
     summary: cleanChainThinkText(stripHtml(x.description||'')).slice(0,220),
     content: cleanChainThinkText(stripHtml(x.description||'')),
     link:`https://www.odaily.news/zh-CN/newsflash/${x.id}`,
-    original_link: x.originUrl || x.originalUrl || '',
+    original_link: x.originUrl || x.originalUrl || x.newsUrl || '',
+    image_url: Array.isArray(x.images) && x.images.length ? String(x.images[0] || '') : '',
     is_featured:Boolean(x.isImportant),
     published_at: toBJT(x.publishTimestamp)
   }));
@@ -143,6 +186,7 @@ async function fetchBlockbeats(){
     content: cleanChainThinkText(stripHtml(x.content||'')),
     link:`https://www.theblockbeats.info/flash/${x.article_id || x.id}`,
     original_link: x.url || '',
+    image_url: x.img_url || x.c_img_url || '',
     is_featured:Boolean(x.is_hot || x.is_show_home),
     published_at: x.add_time ? toBJT(Number(x.add_time)*1000) : ''
   }));
@@ -194,7 +238,7 @@ async function pollOnce(){
     try {
       const items = await fn();
       const normalized = items.map(it=>({...it, fetched_at:new Date().toISOString(), reviewed:false, passed:null, review_reason:'', rewritten_title:'', rewritten_content:'', ai_title:'', ai_body:''}));
-      const added = mergeItems(store, media, normalized);
+      const { added, updated } = mergeItems(store, media, normalized);
       let reviewed=0, passed=0;
       for (const it of added){
         reviewed++;
@@ -208,7 +252,7 @@ async function pollOnce(){
           newlyPassedKeys.push(keyOf(it));
         }
       }
-      report.push({media, ok:true, fetched:items.length, added:added.length, reviewed, passed});
+      report.push({media, ok:true, fetched:items.length, added:added.length, updated, reviewed, passed});
     } catch (e){ report.push({media, ok:false, error:String(e.message||e)}); }
   }
   saveStore(store);

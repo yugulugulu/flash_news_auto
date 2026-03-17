@@ -22,3 +22,6 @@ model_config.json
 # OS / editors
 .vscode/
 .idea/
+
+# Dashboard private env
+dashboard/.env.local

@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename)
 const BASE = __dirname
 const DATA_FILE = path.join(BASE, 'kuaixun_v2.json')
 const STYLE_FILE = path.join(BASE, 'chainthink_style.md')
+const STYLE_OVERRIDE_FILE = path.join(BASE, 'chainthink_style.override.md')
 const MODEL_CONFIG_FILE = path.join(BASE, 'model_config.json')
 
 function load() {
@@ -20,7 +21,10 @@ function save(data) {
 }
 
 function loadStyleGuide() {
-  return fs.readFileSync(STYLE_FILE, 'utf8')
+  const base = fs.readFileSync(STYLE_FILE, 'utf8')
+  const override = fs.existsSync(STYLE_OVERRIDE_FILE) ? fs.readFileSync(STYLE_OVERRIDE_FILE, 'utf8').trim() : ''
+  if (!override) return base
+  return `${base}\n\n# 用户自定义补充规则（override）\n\n${override}`
 }
 
 function loadModelConfig() {

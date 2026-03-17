@@ -2,14 +2,204 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const app = express()
 const PORT = process.env.PORT || 8787
 const DATA_FILE = path.resolve('../kuaixun_v2.json')
 const MODEL_CONFIG_FILE = path.resolve('../model_config.json')
+const STYLE_FILE = path.resolve('../chainthink_style.md')
+const STYLE_OVERRIDE_FILE = path.resolve('../chainthink_style.override.md')
+const ENV_LOCAL_FILE = path.resolve('.env.local')
 
 app.use(cors())
+const execFileAsync = promisify(execFile)
+
 app.use(express.json())
+
+
+
+function parseEnvFile(content = '') {
+  const result = {}
+  for (const rawLine of String(content).split('\n')) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const index = line.indexOf('=')
+    if (index === -1) continue
+    const key = line.slice(0, index).trim()
+    let value = line.slice(index + 1).trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1)
+    }
+    result[key] = value
+  }
+  return result
+}
+
+function loadLocalEnvConfig() {
+  const envFile = fs.existsSync(ENV_LOCAL_FILE) ? parseEnvFile(fs.readFileSync(ENV_LOCAL_FILE, 'utf8')) : {}
+  return {
+    token: String(envFile.CHAINTHINK_TOKEN || process.env.CHAINTHINK_TOKEN || process.env.CHAINTHINK_TEST_TOKEN || '').trim(),
+    hasToken: Boolean(envFile.CHAINTHINK_TOKEN || process.env.CHAINTHINK_TOKEN || process.env.CHAINTHINK_TEST_TOKEN),
+    baseUrl: String(envFile.CHAINTHINK_BASE_URL || process.env.CHAINTHINK_BASE_URL || 'https://api-v2.chainthink.cn').trim(),
+    xUserId: String(envFile.CHAINTHINK_X_USER_ID || process.env.CHAINTHINK_X_USER_ID || '').trim(),
+    xAppId: String(envFile.CHAINTHINK_X_APP_ID || process.env.CHAINTHINK_X_APP_ID || '101').trim(),
+    userId: String(envFile.CHAINTHINK_DEFAULT_USER_ID || process.env.CHAINTHINK_DEFAULT_USER_ID || '3').trim(),
+    asUserId: String(envFile.CHAINTHINK_DEFAULT_AS_USER_ID || process.env.CHAINTHINK_DEFAULT_AS_USER_ID || '3').trim(),
+    origin: String(envFile.CHAINTHINK_ORIGIN || process.env.CHAINTHINK_ORIGIN || 'https://admin.chainthink.cn').trim(),
+    referer: String(envFile.CHAINTHINK_REFERER || process.env.CHAINTHINK_REFERER || 'https://admin.chainthink.cn/').trim(),
+  }
+}
+
+function saveLocalEnvConfig(input = {}) {
+  const current = fs.existsSync(ENV_LOCAL_FILE) ? parseEnvFile(fs.readFileSync(ENV_LOCAL_FILE, 'utf8')) : {}
+  const next = {
+    ...current,
+    CHAINTHINK_TOKEN: String(input.token || '').trim(),
+    CHAINTHINK_BASE_URL: String(input.baseUrl || 'https://api-v2.chainthink.cn').trim(),
+    CHAINTHINK_X_USER_ID: String(input.xUserId || '').trim(),
+    CHAINTHINK_X_APP_ID: String(input.xAppId || '101').trim(),
+    CHAINTHINK_DEFAULT_USER_ID: String(input.userId || '3').trim(),
+    CHAINTHINK_DEFAULT_AS_USER_ID: String(input.asUserId || '3').trim(),
+    CHAINTHINK_ORIGIN: String(input.origin || 'https://admin.chainthink.cn').trim(),
+    CHAINTHINK_REFERER: String(input.referer || 'https://admin.chainthink.cn/').trim(),
+  }
+  const lines = [
+    '# Local private env for dashboard ChainThink integration',
+    ...Object.entries(next).filter(([, value]) => String(value).length > 0).map(([key, value]) => `${key}=${value}`),
+  ]
+  fs.writeFileSync(ENV_LOCAL_FILE, `${lines.join('\n')}\n`)
+  return loadLocalEnvConfig()
+}
+
+function getChainthinkEnv() {
+  const local = loadLocalEnvConfig()
+  return {
+    baseUrl: String(process.env.CHAINTHINK_BASE_URL || local.baseUrl || 'https://api-v2.chainthink.cn').trim(),
+    publishPath: String(process.env.CHAINTHINK_PUBLISH_PATH || '/ccs/v1/admin/content/publish').trim(),
+    token: String(process.env.CHAINTHINK_TOKEN || process.env.CHAINTHINK_TEST_TOKEN || local.token || '').trim(),
+    xAppId: String(process.env.CHAINTHINK_X_APP_ID || local.xAppId || '101').trim(),
+    xUserId: String(process.env.CHAINTHINK_X_USER_ID || local.xUserId || '').trim(),
+    defaultUserId: String(process.env.CHAINTHINK_DEFAULT_USER_ID || local.userId || '3').trim(),
+    defaultAsUserId: String(process.env.CHAINTHINK_DEFAULT_AS_USER_ID || local.asUserId || '3').trim(),
+    origin: String(process.env.CHAINTHINK_ORIGIN || local.origin || 'https://admin.chainthink.cn').trim(),
+    referer: String(process.env.CHAINTHINK_REFERER || local.referer || 'https://admin.chainthink.cn/').trim(),
+  }
+}
+
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function toParagraphHtml(text = '') {
+  const lines = String(text || '').split(/\n+/).map((line) => line.trim()).filter(Boolean)
+  if (!lines.length) return '<p></p>'
+  return lines.map((line) => `<p>${escapeHtml(line)}</p>`).join('')
+}
+
+function buildChainthinkDraftPayload(input) {
+  const title = String(input?.title || '').trim()
+  const text = String(input?.text || '').trim()
+  const link = String(input?.link || '').trim()
+  if (!title) throw new Error('标题不能为空')
+  if (!text) throw new Error('正文不能为空')
+  return {
+    id: '0',
+    info: {
+      ...(link ? { link } : {}),
+      ...(input?.coverImage ? { cover_image: String(input.coverImage).trim() } : {}),
+    },
+    is_translate: true,
+    translation: {
+      'zh-CN': {
+        title,
+        text: toParagraphHtml(text),
+        abstract: '',
+      },
+    },
+    type: 7,
+    admin_detail: {},
+    strong_content_tags: {},
+    chain_is_calendar: false,
+    chain_calendar_time: Math.floor(Date.now() / 1000),
+    chain_calendar_tendency: 0,
+    is_push_bian: 2,
+    content_pin_top: 0,
+    is_public: false,
+    user_id: String(input?.userId || '3'),
+    chain_fixed_publish_time: 0,
+    as_user_id: String(input?.asUserId || '3'),
+    is_chain: true,
+    chain_airdrop_time: 0,
+    chain_airdrop_time_end: 0,
+  }
+}
+
+async function publishChainthinkDraft(input) {
+  const env = getChainthinkEnv()
+  if (!env.token) throw new Error('未配置 CHAINTHINK_TOKEN / CHAINTHINK_TEST_TOKEN，无法发布草稿')
+  const url = `${env.baseUrl.replace(/\/$/, '')}${env.publishPath}`
+  const coverImage = input?.imageUrl ? await uploadChainthinkCoverFromUrl(String(input.imageUrl)) : ''
+  const body = buildChainthinkDraftPayload({
+    ...input,
+    coverImage,
+    userId: env.defaultUserId,
+    asUserId: env.defaultAsUserId,
+  })
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'X-App-Id': env.xAppId,
+      'x-token': env.token,
+      'x-user-id': env.xUserId,
+      Origin: env.origin,
+      Referer: env.referer,
+    },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text()
+  let parsed = null
+  try { parsed = JSON.parse(text) } catch {}
+  if (!res.ok) throw new Error(`ChainThink 草稿发布失败（HTTP ${res.status}）：${text.slice(0, 300)}`)
+  if (parsed && parsed.code !== 0) throw new Error(parsed.message || parsed.msg || `ChainThink 草稿发布失败，code=${parsed.code}`)
+  return parsed || { code: 0, raw: text }
+}
+
+
+async function uploadChainthinkCoverFromUrl(imageUrl) {
+  const env = getChainthinkEnv()
+  if (!imageUrl) return ''
+  const scriptPath = path.resolve('./scripts/upload_cover.py')
+  const helperPath = path.resolve('./scripts/compute_crc64.cjs')
+  if (!fs.existsSync(scriptPath) || !fs.existsSync(helperPath)) {
+    throw new Error('缺少 ChainThink 图片上传脚本，无法上传配图')
+  }
+  const { stdout, stderr } = await execFileAsync('python3', [scriptPath, imageUrl], {
+    env: {
+      ...process.env,
+      CHAINTHINK_TOKEN: env.token,
+      CHAINTHINK_USER_ID: env.xUserId,
+      CHAINTHINK_BASE_URL: env.baseUrl,
+      CHAINTHINK_X_APP_ID: env.xAppId,
+      CHAINTHINK_ORIGIN: env.origin,
+      CHAINTHINK_REFERER: env.referer,
+    },
+    maxBuffer: 10 * 1024 * 1024,
+  })
+  const coverUrl = String(stdout || '').trim()
+  if (!coverUrl) {
+    throw new Error((stderr || 'ChainThink 图片上传失败').trim())
+  }
+  return coverUrl
+}
 
 function loadData() {
   const raw = fs.readFileSync(DATA_FILE, 'utf8')
@@ -101,6 +291,31 @@ async function testDoubaoConnection(cfg) {
   }
 }
 
+function loadStyleGuide() {
+  const base = fs.readFileSync(STYLE_FILE, 'utf8')
+  const override = fs.existsSync(STYLE_OVERRIDE_FILE) ? fs.readFileSync(STYLE_OVERRIDE_FILE, 'utf8') : ''
+  const effective = override.trim() ? `${base}\n\n# 用户自定义补充规则（override）\n\n${override.trim()}` : base
+  return { base, override, effective }
+}
+
+function saveStyleGuideOverride(input) {
+  const next = String(input?.override || '')
+  fs.writeFileSync(STYLE_OVERRIDE_FILE, next)
+  return loadStyleGuide()
+}
+
+function resetStyleGuideOverride() {
+  try { fs.unlinkSync(STYLE_OVERRIDE_FILE) } catch {}
+  return loadStyleGuide()
+}
+
+function normalizeImageUrl(item) {
+  const raw = item?.image_url
+  if (typeof raw === 'string') return raw
+  if (raw == null) return ''
+  return String(raw)
+}
+
 function getPendingItems() {
   const data = loadData()
   const medias = ['theblockbeats', 'techflow', 'odaily']
@@ -114,6 +329,7 @@ function getPendingItems() {
         const aiTitle = item.ai_title || item.title
         const aiBody = item.ai_body || item.content
         const hasAiOptimized = Boolean(item.ai_title && item.ai_body)
+        const imageUrl = normalizeImageUrl(item)
 
         return {
           media: item.media,
@@ -123,6 +339,7 @@ function getPendingItems() {
           content: item.content,
           link: item.link,
           original_link: item.original_link,
+          image_url: imageUrl,
           is_featured: item.is_featured,
           published_at: item.published_at,
           review_reason: item.review_reason,
@@ -156,6 +373,13 @@ app.get('/api/news/:media', (req, res) => {
   res.json({ ok: true, data: data[media] })
 })
 
+app.get('/api/debug/item/:media/:id', (req, res) => {
+  const { media, id } = req.params
+  const data = loadData()
+  const item = (data?.[media]?.items || []).find((x) => String(x.id) === String(id)) || null
+  res.json({ ok: true, data: item })
+})
+
 app.get('/api/model-config', (_req, res) => {
   const config = loadModelConfig()
   res.json({ ok: true, data: exposeConfig(config) })
@@ -171,6 +395,62 @@ app.post('/api/model-config/test', async (req, res) => {
     const merged = saveModelConfig(req.body || {})
     const result = await testDoubaoConnection(merged)
     res.json({ ok: true, message: '豆包连接成功', data: result })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/style-guide', (_req, res) => {
+  try {
+    res.json({ ok: true, data: loadStyleGuide() })
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/style-guide/override', (req, res) => {
+  try {
+    const saved = saveStyleGuideOverride(req.body || {})
+    res.json({ ok: true, message: '风格补充规则保存成功', data: saved })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/style-guide/reset', (_req, res) => {
+  try {
+    const reset = resetStyleGuideOverride()
+    res.json({ ok: true, message: '已恢复默认风格规则', data: reset })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+
+
+app.get('/api/chainthink/config', (_req, res) => {
+  try {
+    const cfg = loadLocalEnvConfig()
+    res.json({ ok: true, data: { ...cfg, token: '', hasToken: cfg.hasToken } })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/chainthink/config', (req, res) => {
+  try {
+    const saved = saveLocalEnvConfig(req.body || {})
+    res.json({ ok: true, message: 'ChainThink token 配置已保存（重启 API 后生效）', data: { ...saved, token: '', hasToken: saved.hasToken } })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/chainthink/draft', async (req, res) => {
+  try {
+    const payload = req.body || {}
+    const response = await publishChainthinkDraft(payload)
+    res.json({ ok: true, message: '已发布到 ChainThink 草稿', data: response })
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
   }
