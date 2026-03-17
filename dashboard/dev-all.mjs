@@ -33,9 +33,9 @@ function runNode(name, args, cwd = __dirname) {
   return attachChild(name, child)
 }
 
-function runNpm(name, scriptName, cwd = __dirname) {
-  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  const child = spawn(npmCmd, ['run', scriptName], {
+function runViteDev(name, cwd = __dirname) {
+  const viteBin = path.resolve(__dirname, 'node_modules/vite/bin/vite.js')
+  const child = spawn(process.execPath, [viteBin, '--host', '0.0.0.0'], {
     cwd,
     stdio: 'inherit',
   })
@@ -86,7 +86,7 @@ process.on('SIGTERM', () => {
 async function main() {
   await runPollerCommand('start')
   runNode('api', ['server.mjs'], __dirname)
-  runNpm('web', 'dev:web', __dirname)
+  runViteDev('web', __dirname)
   console.log('[dev-all] api + web + poller started. Press Ctrl+C to stop all.')
 }
 
