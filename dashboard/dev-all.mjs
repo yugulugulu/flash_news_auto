@@ -5,17 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const rootDir = path.resolve(__dirname, '..')
-
+const pollerctlPath = path.resolve(__dirname, '../pollerctl.mjs')
 const children = []
 let shuttingDown = false
 
-function run(name, command, args, cwd = __dirname) {
-  const child = spawn(command, args, {
-    cwd,
-    stdio: 'inherit',
-    shell: false,
-  })
+function attachChild(name, child) {
   child.__name = name
   children.push(child)
   child.on('exit', (code, signal) => {
@@ -23,24 +17,40 @@ function run(name, command, args, cwd = __dirname) {
     if (code && code !== 0) {
       console.error(`[${name}] exited with code ${code}${signal ? ` signal=${signal}` : ''}`)
     }
+  })
+  child.on('error', (error) => {
+    if (shuttingDown) return
+    console.error(`[${name}] failed to start:`, error.message)
   })
   return child
 }
 
-function runShell(name, script, cwd = __dirname) {
-  const child = spawn('zsh', ['-lc', script], {
+function runNode(name, args, cwd = __dirname) {
+  const child = spawn(process.execPath, args, {
     cwd,
     stdio: 'inherit',
   })
-  child.__name = name
-  children.push(child)
-  child.on('exit', (code, signal) => {
-    if (shuttingDown) return
-    if (code && code !== 0) {
-      console.error(`[${name}] exited with code ${code}${signal ? ` signal=${signal}` : ''}`)
-    }
+  return attachChild(name, child)
+}
+
+function runNpm(name, scriptName, cwd = __dirname) {
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const child = spawn(npmCmd, ['run', scriptName], {
+    cwd,
+    stdio: 'inherit',
   })
-  return child
+  return attachChild(name, child)
+}
+
+async function runPollerCommand(command) {
+  await new Promise((resolve) => {
+    const child = spawn(process.execPath, [pollerctlPath, command], {
+      cwd: __dirname,
+      stdio: 'inherit',
+    })
+    child.on('exit', () => resolve())
+    child.on('error', () => resolve())
+  })
 }
 
 async function shutdown(exitCode = 0) {
@@ -55,16 +65,7 @@ async function shutdown(exitCode = 0) {
   }
 
   await new Promise((resolve) => setTimeout(resolve, 500))
-
-  try {
-    await new Promise((resolve) => {
-      const stopper = spawn('zsh', ['-lc', '../pollerctl stop || true'], {
-        cwd: __dirname,
-        stdio: 'inherit',
-      })
-      stopper.on('exit', () => resolve())
-    })
-  } catch {}
+  await runPollerCommand('stop')
 
   for (const child of children) {
     try {
@@ -83,17 +84,9 @@ process.on('SIGTERM', () => {
 })
 
 async function main() {
-  await new Promise((resolve) => {
-    const starter = spawn(process.execPath, [path.resolve(__dirname, '../pollerctl.mjs'), 'start'], {
-      cwd: __dirname,
-      stdio: 'inherit',
-    })
-    starter.on('exit', () => resolve())
-  })
-
-  run('api', 'node', ['server.mjs'], __dirname)
-  runShell('web', 'npm run dev:web', __dirname)
-
+  await runPollerCommand('start')
+  runNode('api', ['server.mjs'], __dirname)
+  runNpm('web', 'dev:web', __dirname)
   console.log('[dev-all] api + web + poller started. Press Ctrl+C to stop all.')
 }
 
