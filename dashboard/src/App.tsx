@@ -20,6 +20,7 @@ import odailyLogo from './assets/odaily.svg'
 import './App.css'
 
 type MediaKey = 'theblockbeats' | 'techflow' | 'odaily'
+type AIDecision = 'feature' | 'rewrite' | 'review' | 'drop' | ''
 
 type NewsItem = {
   media: MediaKey
@@ -30,7 +31,13 @@ type NewsItem = {
   link: string
   original_link: string
   image_url: string
-  is_featured: boolean
+  source_is_featured: boolean
+  chainthink_is_featured: boolean
+  ai_score: number | null
+  ai_decision: AIDecision
+  ai_score_reason: string
+  ai_risk_flags: string[]
+  ai_dimensions: Record<string, number>
   published_at: string
   review_reason: string
   rewritten_title: string
@@ -188,6 +195,14 @@ function extractRewrittenBody(text: string) {
   if (!text) return '—'
   const match = text.match(/正文内容[:：]\s*([\s\S]*)$/)
   return match ? match[1].trim() : text.trim()
+}
+
+function getDecisionLabel(decision: AIDecision) {
+  if (decision === 'feature') return '精选'
+  if (decision === 'rewrite') return '自动改写'
+  if (decision === 'review') return '人工复核'
+  if (decision === 'drop') return '丢弃'
+  return '未评分'
 }
 
 function App() {
@@ -588,13 +603,17 @@ function App() {
                     <div className="news-item-copy">
                       <div className="news-title">{item.ai_title || item.title}</div>
                       <div className="news-meta">
-                        <span className={item.is_featured ? 'meta-badge meta-badge-featured' : 'meta-badge'}>
-                          {item.is_featured ? '精选' : '普通'}
+                        {item.chainthink_is_featured ? (
+                          <span className="meta-badge meta-badge-featured">ChainThink 精选</span>
+                        ) : null}
+                        <span className={item.source_is_featured ? 'meta-badge meta-badge-source' : 'meta-badge meta-badge-plain'}>
+                          {item.source_is_featured ? '源站重点' : '源站无信号'}
                         </span>
+                        <span className="meta-badge">{getDecisionLabel(item.ai_decision)}</span>
                         <span className={item.has_ai_optimized ? 'meta-badge meta-badge-ai' : 'meta-badge meta-badge-plain'}>
-                          {item.has_ai_optimized ? '已 AI 优化' : '未 AI 优化'}
+                          {item.has_ai_optimized ? '已 AI 改写' : '未 AI 改写'}
                         </span>
-                        <span className="meta-badge">{item.review_reason || 'passed'}</span>
+                        <span className="meta-badge">AI分：{item.ai_score ?? '—'}</span>
                       </div>
                     </div>
                   </div>
@@ -630,6 +649,19 @@ function App() {
                 <div className="compare-grid">
                   <article className="compare-card">
                     <h3>修改前</h3>
+                    <div className="score-panel">
+                      <div className="score-panel-head">评分信息</div>
+                      <div className="score-panel-grid">
+                        <div className="score-kv"><span className="score-kv-label">AI 总分</span><strong>{selected.ai_score ?? '—'}</strong></div>
+                        <div className="score-kv"><span className="score-kv-label">AI 决策</span><strong>{getDecisionLabel(selected.ai_decision)}</strong></div>
+                        <div className="score-kv"><span className="score-kv-label">源站重点信号</span><strong>{selected.source_is_featured ? '命中' : '未命中'}</strong></div>
+                        <div className="score-kv"><span className="score-kv-label">我们精选</span><strong>{selected.chainthink_is_featured ? '是' : '否'}</strong></div>
+                      </div>
+                      <div className="score-reason-box">
+                        <div className="score-kv-label">评分理由</div>
+                        <pre className="field-body pre-wrap score-reason-pre">{selected.ai_score_reason || '—'}</pre>
+                      </div>
+                    </div>
                     <div className="field"><label>标题</label><div className="field-body">{selected.title}</div></div>
                     <div className="field"><label>正文</label><pre className="field-body pre-wrap">{selected.content || selected.summary}</pre></div>
                     <div className="field"><label>原文链接</label><a href={selected.original_link || selected.link} target="_blank" rel="noreferrer">{selected.original_link || selected.link || '—'}</a></div>

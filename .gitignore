@@ -8,6 +8,8 @@
 node_modules/
 dashboard/node_modules/
 dashboard/dist/
+flash_news_runtime.json
+scripts/kuaixun_v2.json
 tab_state.json
 word_records_tmp.json
 push_records_v2.docx

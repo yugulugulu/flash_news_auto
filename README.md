@@ -15,12 +15,19 @@
 
 ```text
 flash_news_auto/
-├── flash_news_v2.mjs              # 主轮询脚本
-├── ai_rewrite_pending.mjs         # 待改写快讯的 AI 改写脚本
-├── pollerctl                      # 轮询控制脚本（启动/停止/状态/日志）
+├── scripts/
+│   ├── flash_news_v2.mjs          # 主轮询脚本
+│   ├── pollerctl.mjs             # 轮询控制脚本实现
+│   ├── re_score_existing.mjs     # 已有数据重评分脚本
+│   ├── ai_score_pending.mjs       # 待评分快讯的 AI 评分脚本
+│   └── ai_rewrite_pending.mjs     # 待改写快讯的 AI 改写脚本
+├── pollerctl                      # 轮询控制脚本入口（启动/停止/状态/日志）
 ├── kuaixun_v2.json                # 抓取与筛选后的数据文件
 ├── chainthink_style.md            # AI 改写风格规范
 ├── model_config.example.json      # 模型配置示例
+├── template/                      # 提示词模板
+│   ├── scoring_prompt.md
+│   └── rewrite_prompt.md
 ├── dashboard/                     # 前端 + 后端 Dashboard
 │   ├── server.mjs                 # Dashboard API
 │   ├── package.json
@@ -37,9 +44,7 @@ flash_news_auto/
 - npm 10+
 - Python 3（仅在导出 Word 报告时需要）
 
-如果你要使用完整轮询能力，还需要项目原本依赖的本地工具/环境，例如：
-- `bb-browser`
-- 可用的 AI 模型调用方式（豆包或 Claude CLI）
+如果你要使用完整轮询能力，还需要可用的 AI 模型调用方式（豆包或 Claude CLI）。
 
 > 注意：这类外部依赖属于运行环境，不属于本次“相对路径改造”范围。
 
@@ -140,16 +145,10 @@ cp model_config.example.json model_config.json
 ./pollerctl restart
 ```
 
-清理运行态文件（不删除核心代码）：
+清理运行态文件（不删除核心代码，仅清理 `pid/lock`）：
 
 ```bash
 ./pollerctl clean
-```
-
-重置运行数据（会清理 json/docx/temp 数据，请谨慎使用）：
-
-```bash
-./pollerctl reset
 ```
 
 ---
@@ -164,7 +163,7 @@ npm run dev:api
 ```
 
 这个命令现在会先自动执行一次：
-- `node ../pollerctl.mjs start`
+- `node ../scripts/pollerctl.mjs start`
 
 也就是说：**启动后端 API 时，会顺手拉起快讯轮询**，用户不需要再单独执行 `./pollerctl start`。
 
@@ -240,8 +239,9 @@ lsof -nP -iTCP:5174 -sTCP:LISTEN
 ### 1）检查主脚本语法
 
 ```bash
-node --check flash_news_v2.mjs
-node --check ai_rewrite_pending.mjs
+node --check scripts/flash_news_v2.mjs
+node --check scripts/ai_score_pending.mjs
+node --check scripts/ai_rewrite_pending.mjs
 ```
 
 ### 2）检查 Dashboard 构建
@@ -304,4 +304,6 @@ git push origin v1.0
 ## License
 
 如果你准备公开发布，建议补一个 LICENSE 文件（如 MIT）。
+目前本项目未自动添加许可证，请按你的发布需求自行决定。
+ MIT）。
 目前本项目未自动添加许可证，请按你的发布需求自行决定。

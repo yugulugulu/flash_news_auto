@@ -323,13 +323,17 @@ function getPendingItems() {
 
   for (const media of medias) {
     const items = (data[media]?.items || [])
-      .filter((item) => item.reviewed === true && item.passed === 1)
+      .filter((item) => String(item.ai_decision || '') !== 'drop')
       .sort((a, b) => toTime(b.published_at) - toTime(a.published_at))
       .map((item) => {
         const aiTitle = item.ai_title || item.title
         const aiBody = item.ai_body || item.content
         const hasAiOptimized = Boolean(item.ai_title && item.ai_body)
         const imageUrl = normalizeImageUrl(item)
+        const aiDecision = String(item.ai_decision || '')
+        const aiScore = typeof item.ai_score === 'number' ? item.ai_score : null
+        const sourceFeatured = Boolean(item.is_featured)
+        const chainthinkFeatured = aiDecision === 'feature' || Boolean(item.is_featured_candidate)
 
         return {
           media: item.media,
@@ -340,7 +344,13 @@ function getPendingItems() {
           link: item.link,
           original_link: item.original_link,
           image_url: imageUrl,
-          is_featured: item.is_featured,
+          source_is_featured: sourceFeatured,
+          chainthink_is_featured: chainthinkFeatured,
+          ai_score: aiScore,
+          ai_decision: aiDecision,
+          ai_score_reason: item.ai_score_reason || '',
+          ai_risk_flags: Array.isArray(item.ai_risk_flags) ? item.ai_risk_flags : [],
+          ai_dimensions: item.ai_dimensions && typeof item.ai_dimensions === 'object' ? item.ai_dimensions : {},
           published_at: item.published_at,
           review_reason: item.review_reason,
           rewritten_title: item.rewritten_title,

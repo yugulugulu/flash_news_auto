@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const pollerctlPath = path.resolve(__dirname, '../pollerctl.mjs')
+const pollerctlPath = path.resolve(__dirname, '../scripts/pollerctl.mjs')
 const children = []
 let shuttingDown = false
 
