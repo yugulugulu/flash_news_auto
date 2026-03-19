@@ -6,8 +6,10 @@
 - 基于 `template/scoring_prompt.md` 与 `template/rewrite_prompt.md` 的 AI 评分与改写
 - 本地 Dashboard 审阅与配置界面
 
-> 本项目已尽量改为**相对路径**，方便别人直接拉下来复用。
-> 本次整理仅处理：路径、文档、仓库发布准备；**不改核心业务逻辑**。
+
+## 快速使用
+- npm run dev:all 启动
+- npm run stop:all 停止
 
 ---
 
