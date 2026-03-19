@@ -7,10 +7,10 @@
     "dev": "vite",
     "poller:start": "node ../scripts/pollerctl.mjs start || true",
     "poller:stop": "node ../scripts/pollerctl.mjs stop || true",
-    "dev:api": "pkill -f \"node server.mjs\" || true; pkill -f \"npm run dev:api\" || true; npm run poller:start && node server.mjs",
+    "dev:api": "node stop-all.mjs && npm run poller:start && node server.mjs",
     "dev:web": "vite --host 0.0.0.0",
     "dev:all": "node dev-all.mjs",
-    "stop:all": "npm run poller:stop",
+    "stop:all": "node stop-all.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

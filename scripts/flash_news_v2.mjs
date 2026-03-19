@@ -28,12 +28,10 @@ const runtimeState = {
   mode: 'daemon',
   shutting_down: false,
   intervals_ms: {
-    fetch: FETCH_INTERVAL_MS,
     score: SCORE_INTERVAL_MS,
     rewrite: REWRITE_INTERVAL_MS,
   },
   workers: {
-    fetch: createWorkerState(),
     score: createWorkerState(),
     rewrite: createWorkerState(),
   },
@@ -586,7 +584,6 @@ async function main() {
   writeRuntimeStatus();
 
   if (once) {
-    await runWorkerCycle('fetch', runFetchCycle);
     await runWorkerCycle('score', runAiScore);
     await runWorkerCycle('rewrite', runAiRewrite);
     runtimeState.stopped_at = new Date().toISOString();
@@ -595,7 +592,6 @@ async function main() {
   }
 
   await Promise.all([
-    workerLoop('fetch', FETCH_INTERVAL_MS, runFetchCycle),
     workerLoop('score', SCORE_INTERVAL_MS, runAiScore),
     workerLoop('rewrite', REWRITE_INTERVAL_MS, runAiRewrite),
   ]);

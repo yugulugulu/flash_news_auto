@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { clearListeningPorts } from './process-utils.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -65,6 +66,7 @@ async function shutdown(exitCode = 0) {
   }
 
   await new Promise((resolve) => setTimeout(resolve, 500))
+  await clearListeningPorts([5173, 8787], 'dev-all:shutdown')
   await runPollerCommand('stop')
 
   for (const child of children) {
@@ -84,6 +86,10 @@ process.on('SIGTERM', () => {
 })
 
 async function main() {
+  const cleared = await clearListeningPorts([5173, 8787], 'dev-all:start')
+  if (cleared.remaining.length) {
+    throw new Error(`ports still busy after cleanup: ${cleared.remaining.join(', ')}`)
+  }
   await runPollerCommand('stop')
   await runPollerCommand('start')
   runNode('api', ['server.mjs'], __dirname)

@@ -9,6 +9,9 @@ node_modules/
 dashboard/node_modules/
 dashboard/dist/
 flash_news_runtime.json
+flash_news_runtime_*.json
+chainthink_auto_draft_state.json
+media_control.json
 scripts/kuaixun_v2.json
 tab_state.json
 word_records_tmp.json

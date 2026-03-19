@@ -3,7 +3,7 @@
 一个可复用的加密快讯抓取与 AI 改写项目，包含：
 - 三家媒体快讯轮询抓取
 - 通过规则筛选待推送快讯
-- 基于 `chainthink_style.md` 的 AI 改写
+- 基于 `template/scoring_prompt.md` 与 `template/rewrite_prompt.md` 的 AI 评分与改写
 - 本地 Dashboard 审阅与配置界面
 
 > 本项目已尽量改为**相对路径**，方便别人直接拉下来复用。
@@ -23,11 +23,10 @@ flash_news_auto/
 │   └── ai_rewrite_pending.mjs     # 待改写快讯的 AI 改写脚本
 ├── pollerctl                      # 轮询控制脚本入口（启动/停止/状态/日志）
 ├── kuaixun_v2.json                # 抓取与筛选后的数据文件
-├── chainthink_style.md            # AI 改写风格规范
 ├── model_config.example.json      # 模型配置示例
 ├── template/                      # 提示词模板
-│   ├── scoring_prompt.md
-│   └── rewrite_prompt.md
+│   ├── scoring_prompt.md          # 综合精选评分提示词
+│   └── rewrite_prompt.md          # ChainThink 风格重写提示词
 ├── dashboard/                     # 前端 + 后端 Dashboard
 │   ├── server.mjs                 # Dashboard API
 │   ├── package.json

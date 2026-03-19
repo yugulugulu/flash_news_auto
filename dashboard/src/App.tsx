@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   CircleAlert,
   PlugZap,
-  Maximize2,
   X,
 } from 'lucide-react'
 import blockbeatsLogo from './assets/blockbeats.svg'
@@ -45,6 +44,8 @@ type NewsItem = {
   ai_title: string
   ai_body: string
   has_ai_optimized: boolean
+  chainthink_draft_published_at: string
+  chainthink_draft_publish_mode: string
 }
 
 type ApiResponse = {
@@ -69,9 +70,47 @@ type TestResult = {
 }
 
 type StyleGuideData = {
-  base: string
-  override: string
-  effective: string
+  content: string
+}
+
+type MediaControlEntry = {
+  key: MediaKey
+  label: string
+  enabled: boolean
+  running: boolean
+  pid: string
+  last_success_at: string
+  last_error: string
+  last_result: string
+  interval_ms: number
+}
+
+type MediaControlState = {
+  pipeline: {
+    running: boolean
+    pid: string
+  }
+  medias: Record<MediaKey, MediaControlEntry>
+}
+
+type AutoDraftState = {
+  enabled: boolean
+  interval_ms: number
+  worker_running: boolean
+  last_checked_at: string
+  last_published_at: string
+  last_published_key: string
+  last_error: string
+  total_published: number
+}
+
+type PruneResult = {
+  media: MediaKey
+  before: number
+  after: number
+  removed: number
+  threshold: number
+  keep: number
 }
 
 
@@ -148,27 +187,82 @@ async function testModelConfig(config: ModelConfig): Promise<TestResult> {
 async function fetchStyleGuide(): Promise<StyleGuideData> {
   const res = await fetch('http://localhost:8787/api/style-guide')
   const json = await res.json()
-  if (!json.ok) throw new Error(json.message || '读取风格规则失败')
+  if (!json.ok) throw new Error(json.message || '读取重写提示词失败')
   return json.data
 }
 
-async function saveStyleGuideOverride(override: string): Promise<StyleGuideData> {
-  const res = await fetch('http://localhost:8787/api/style-guide/override', {
+async function saveStyleGuideContent(content: string): Promise<StyleGuideData> {
+  const res = await fetch('http://localhost:8787/api/style-guide', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ override }),
+    body: JSON.stringify({ content }),
   })
   const json = await res.json()
-  if (!json.ok) throw new Error(json.message || '保存风格补充规则失败')
+  if (!json.ok) throw new Error(json.message || '保存重写提示词失败')
   return json.data
 }
 
-async function resetStyleGuideOverride(): Promise<StyleGuideData> {
-  const res = await fetch('http://localhost:8787/api/style-guide/reset', {
+async function fetchScoringGuide(): Promise<StyleGuideData> {
+  const res = await fetch('http://localhost:8787/api/scoring-guide')
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '读取评分提示词失败')
+  return json.data
+}
+
+async function saveScoringGuideContent(content: string): Promise<StyleGuideData> {
+  const res = await fetch('http://localhost:8787/api/scoring-guide', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
   })
   const json = await res.json()
-  if (!json.ok) throw new Error(json.message || '恢复默认风格失败')
+  if (!json.ok) throw new Error(json.message || '保存评分提示词失败')
+  return json.data
+}
+
+async function fetchAutoDraftState(): Promise<AutoDraftState> {
+  const res = await fetch('http://localhost:8787/api/chainthink/auto-draft')
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '读取全自动状态失败')
+  return json.data
+}
+
+async function fetchMediaControl(): Promise<MediaControlState> {
+  const res = await fetch('http://localhost:8787/api/media-control')
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '读取媒体抓取状态失败')
+  return json.data
+}
+
+async function saveMediaControl(media: MediaKey, enabled: boolean): Promise<MediaControlState> {
+  const res = await fetch(`http://localhost:8787/api/media-control/${media}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '保存媒体抓取状态失败')
+  return json.data
+}
+
+async function pruneMediaNews(media: MediaKey): Promise<PruneResult> {
+  const res = await fetch(`http://localhost:8787/api/media-control/${media}/prune`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '清理旧快讯失败')
+  return json.data
+}
+
+async function saveAutoDraftState(enabled: boolean): Promise<AutoDraftState> {
+  const res = await fetch('http://localhost:8787/api/chainthink/auto-draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.message || '保存全自动状态失败')
   return json.data
 }
 
@@ -217,11 +311,15 @@ function App() {
   const [isEditingConfig, setIsEditingConfig] = useState(false)
   const [isTestingConfig, setIsTestingConfig] = useState(false)
   const [isSavingStyleGuide, setIsSavingStyleGuide] = useState(false)
+  const [isSavingScoringGuide, setIsSavingScoringGuide] = useState(false)
   const [isStyleGuideModalOpen, setIsStyleGuideModalOpen] = useState(false)
-  const [isStyleGuidePreviewOpen, setIsStyleGuidePreviewOpen] = useState(false)
+  const [isScoringGuideModalOpen, setIsScoringGuideModalOpen] = useState(false)
   const [isChainthinkConfigOpen, setIsChainthinkConfigOpen] = useState(false)
   const [previewImageUrl, setPreviewImageUrl] = useState('')
   const [isPublishingDraft, setIsPublishingDraft] = useState(false)
+  const [isSavingAutoDraft, setIsSavingAutoDraft] = useState(false)
+  const [savingMediaKey, setSavingMediaKey] = useState<MediaKey | ''>('')
+  const [pruningMediaKey, setPruningMediaKey] = useState<MediaKey | ''>('')
   const [isSavingChainthinkConfig, setIsSavingChainthinkConfig] = useState(false)
   const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
@@ -231,10 +329,25 @@ function App() {
     model: '',
     enabled: false,
   })
-  const [styleGuide, setStyleGuide] = useState<StyleGuideData>({
-    base: '',
-    override: '',
-    effective: '',
+  const [styleGuide, setStyleGuide] = useState<StyleGuideData>({ content: '' })
+  const [scoringGuide, setScoringGuide] = useState<StyleGuideData>({ content: '' })
+  const [autoDraftState, setAutoDraftState] = useState<AutoDraftState>({
+    enabled: false,
+    interval_ms: 30_000,
+    worker_running: false,
+    last_checked_at: '',
+    last_published_at: '',
+    last_published_key: '',
+    last_error: '',
+    total_published: 0,
+  })
+  const [mediaControl, setMediaControl] = useState<MediaControlState>({
+    pipeline: { running: false, pid: '' },
+    medias: {
+      theblockbeats: { key: 'theblockbeats', label: '律动', enabled: true, running: false, pid: '', last_success_at: '', last_error: '', last_result: '', interval_ms: 30_000 },
+      techflow: { key: 'techflow', label: '深潮', enabled: true, running: false, pid: '', last_success_at: '', last_error: '', last_result: '', interval_ms: 30_000 },
+      odaily: { key: 'odaily', label: 'Odaily', enabled: true, running: false, pid: '', last_success_at: '', last_error: '', last_result: '', interval_ms: 30_000 },
+    },
   })
   const [chainthinkConfig, setChainthinkConfig] = useState<ChainthinkConfig>({
     token: '',
@@ -247,7 +360,8 @@ function App() {
     origin: 'https://admin.chainthink.cn',
     referer: 'https://admin.chainthink.cn/',
   })
-  const [styleOverrideDraft, setStyleOverrideDraft] = useState('')
+  const [stylePromptDraft, setStylePromptDraft] = useState('')
+  const [scoringPromptDraft, setScoringPromptDraft] = useState('')
   const [cachedData, setCachedData] = useState<Record<MediaKey, NewsItem[]>>({
     theblockbeats: [],
     techflow: [],
@@ -289,9 +403,22 @@ function App() {
       try {
         const guide = await fetchStyleGuide()
         setStyleGuide(guide)
-        setStyleOverrideDraft(guide.override || '')
+        setStylePromptDraft(guide.content || '')
       } catch {
-        setConfigStatus('风格规则读取失败')
+        setConfigStatus('重写提示词读取失败')
+        setConfigStatusType('error')
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const guide = await fetchScoringGuide()
+        setScoringGuide(guide)
+        setScoringPromptDraft(guide.content || '')
+      } catch {
+        setConfigStatus('评分提示词读取失败')
         setConfigStatusType('error')
       }
     })()
@@ -309,10 +436,54 @@ function App() {
     })()
   }, [])
 
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const state = await fetchAutoDraftState()
+        setAutoDraftState(state)
+      } catch {
+        setConfigStatus('全自动状态读取失败')
+        setConfigStatusType('error')
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const state = await fetchMediaControl()
+        setMediaControl(state)
+      } catch {
+        setConfigStatus('媒体抓取状态读取失败')
+        setConfigStatusType('error')
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      try {
+        const state = await fetchAutoDraftState()
+        setAutoDraftState(state)
+      } catch {}
+    }, 10_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      try {
+        const state = await fetchMediaControl()
+        setMediaControl(state)
+      } catch {}
+    }, 10_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const query = useQuery({
     queryKey: ['news'],
     queryFn: fetchNews,
-    refetchInterval: 60_000,
+    refetchInterval: 30_000,
   })
 
   const data = query.data || cachedData
@@ -393,17 +564,34 @@ function App() {
   async function handleSaveStyleGuide() {
     try {
       setIsSavingStyleGuide(true)
-      const saved = await saveStyleGuideOverride(styleOverrideDraft)
+      const saved = await saveStyleGuideContent(stylePromptDraft)
       setStyleGuide(saved)
-      setStyleOverrideDraft(saved.override || '')
-      setConfigStatus('风格补充规则保存成功')
+      setStylePromptDraft(saved.content || '')
+      setConfigStatus('重写提示词保存成功')
       setConfigStatusType('success')
       setIsStyleGuideModalOpen(false)
     } catch (error) {
-      setConfigStatus(error instanceof Error ? error.message : '风格补充规则保存失败')
+      setConfigStatus(error instanceof Error ? error.message : '重写提示词保存失败')
       setConfigStatusType('error')
     } finally {
       setIsSavingStyleGuide(false)
+    }
+  }
+
+  async function handleSaveScoringGuide() {
+    try {
+      setIsSavingScoringGuide(true)
+      const saved = await saveScoringGuideContent(scoringPromptDraft)
+      setScoringGuide(saved)
+      setScoringPromptDraft(saved.content || '')
+      setConfigStatus('评分提示词保存成功')
+      setConfigStatusType('success')
+      setIsScoringGuideModalOpen(false)
+    } catch (error) {
+      setConfigStatus(error instanceof Error ? error.message : '评分提示词保存失败')
+      setConfigStatusType('error')
+    } finally {
+      setIsSavingScoringGuide(false)
     }
   }
 
@@ -427,6 +615,10 @@ function App() {
 
   async function handlePublishChainthinkDraft() {
     if (!selected) return
+    if (selected.chainthink_draft_published_at) {
+      window.alert('这条快讯已经推送过草稿了')
+      return
+    }
     const confirmed = window.confirm('是否发布到chainthink后台草稿')
     if (!confirmed) return
     try {
@@ -435,6 +627,8 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          media: selected.media,
+          id: selected.id,
           title: String(editedTitle || selected.ai_title || selected.title || '').trim(),
           text: String(editedBody || extractRewrittenBody(selected.ai_body || selected.content || '')).trim(),
           link: String(selected.original_link || selected.link || '').trim(),
@@ -458,21 +652,61 @@ function App() {
     }
   }
 
-  async function handleResetStyleGuide() {
-    const confirmed = window.confirm('你确定要恢复默认风格规则吗？这会清空当前自定义补充规则。')
-    if (!confirmed) return
+  async function handleToggleAutoDraft() {
+    const nextEnabled = !autoDraftState.enabled
+    if (nextEnabled) {
+      const confirmed = window.confirm('开启后会每 30 秒检查一次快讯，并把“评分 >= 85 且已 AI 改写、且未推送过”的快讯自动推到 ChainThink 草稿。是否继续？')
+      if (!confirmed) return
+    }
     try {
-      setIsSavingStyleGuide(true)
-      const reset = await resetStyleGuideOverride()
-      setStyleGuide(reset)
-      setStyleOverrideDraft(reset.override || '')
-      setConfigStatus('已恢复默认风格规则')
+      setIsSavingAutoDraft(true)
+      const saved = await saveAutoDraftState(nextEnabled)
+      setAutoDraftState(saved)
+      setConfigStatus(nextEnabled ? '已开启全自动草稿' : '已关闭全自动草稿')
       setConfigStatusType('success')
     } catch (error) {
-      setConfigStatus(error instanceof Error ? error.message : '恢复默认风格失败')
+      setConfigStatus(error instanceof Error ? error.message : '全自动状态保存失败')
       setConfigStatusType('error')
     } finally {
-      setIsSavingStyleGuide(false)
+      setIsSavingAutoDraft(false)
+    }
+  }
+
+  async function handleToggleMedia(media: MediaKey) {
+    const current = mediaControl.medias[media]
+    const nextEnabled = !current?.enabled
+    try {
+      setSavingMediaKey(media)
+      const saved = await saveMediaControl(media, nextEnabled)
+      setMediaControl(saved)
+      setConfigStatus(`${mediaOptions.find((item) => item.key === media)?.label || media}${nextEnabled ? ' 抓取已开启' : ' 抓取已关闭'}`)
+      setConfigStatusType('success')
+    } catch (error) {
+      setConfigStatus(error instanceof Error ? error.message : '媒体抓取状态保存失败')
+      setConfigStatusType('error')
+    } finally {
+      setSavingMediaKey('')
+    }
+  }
+
+  async function handlePruneMedia(media: MediaKey) {
+    const label = mediaOptions.find((item) => item.key === media)?.label || media
+    const confirmed = window.confirm(`只在 ${label} 快讯超过 100 条时，保留最新 50 条。现在执行吗？`)
+    if (!confirmed) return
+    try {
+      setPruningMediaKey(media)
+      const result = await pruneMediaNews(media)
+      await query.refetch()
+      const message = result.removed > 0
+        ? `${label} 已清理 ${result.removed} 条旧快讯`
+        : `${label} 当前不足 ${result.threshold} 条，无需清理`
+      setConfigStatus(message)
+      setConfigStatusType('success')
+    } catch (error) {
+      setConfigStatus(error instanceof Error ? error.message : '清理旧快讯失败')
+      setConfigStatusType('error')
+    } finally {
+      setPruningMediaKey('')
     }
   }
 
@@ -494,17 +728,32 @@ function App() {
             <div className="sidebar-title">媒体</div>
             <div className="media-tabs">
               {mediaOptions.map((media) => (
-                <button
-                  key={media.key}
-                  className={activeMedia === media.key ? 'tab active' : 'tab'}
-                  onClick={() => setActiveMedia(media.key)}
-                >
-                  <span className="tab-main">
-                    <img src={media.logo} alt={media.label} className="media-logo media-logo-real" />
-                    {media.label}
-                  </span>
-                  <span className="count">{data[media.key]?.length || 0}</span>
-                </button>
+                <div key={media.key} className="media-row">
+                  <button
+                    className={activeMedia === media.key ? 'tab active' : 'tab'}
+                    onClick={() => setActiveMedia(media.key)}
+                  >
+                    <span className="tab-main">
+                      <img src={media.logo} alt={media.label} className="media-logo media-logo-real" />
+                      <span className="media-copy">
+                        <strong>{media.label}</strong>
+                        <span className={mediaControl.medias[media.key]?.running ? 'media-fetch-state media-fetch-state-on' : 'media-fetch-state media-fetch-state-off'}>
+                          {mediaControl.medias[media.key]?.enabled
+                            ? (mediaControl.medias[media.key]?.running ? '抓取中' : '待启动')
+                            : '已关闭'}
+                        </span>
+                      </span>
+                    </span>
+                    <span className="count">{data[media.key]?.length || 0}</span>
+                  </button>
+                  <button
+                    className={mediaControl.medias[media.key]?.enabled ? 'media-toggle-btn media-toggle-btn-on' : 'media-toggle-btn'}
+                    disabled={savingMediaKey === media.key}
+                    onClick={() => handleToggleMedia(media.key)}
+                  >
+                    {savingMediaKey === media.key ? '处理中...' : (mediaControl.medias[media.key]?.enabled ? '抓取开' : '抓取关')}
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -568,6 +817,10 @@ function App() {
               <strong>{query.isFetching ? '同步中' : '已连接'}</strong>
             </div>
             <div className="status-row">
+              <span>抓取主控</span>
+              <strong>{mediaControl.pipeline.running ? '运行中' : '未运行'}</strong>
+            </div>
+            <div className="status-row">
               <span>本地缓存</span>
               <strong>Dexie / IndexedDB</strong>
             </div>
@@ -588,6 +841,13 @@ function App() {
                 <input type="checkbox" checked={showAiOnly} onChange={(e) => setShowAiOnly(e.target.checked)} />
                 <span>只显示 AI 已优化的快讯</span>
               </label>
+              <button
+                className="mini-btn"
+                disabled={pruningMediaKey === activeMedia}
+                onClick={() => handlePruneMedia(activeMedia)}
+              >
+                {pruningMediaKey === activeMedia ? '清理中...' : '清理旧快讯'}
+              </button>
             </div>
             <div className="pagination-summary">第 {page} / {totalPages} 页 · 每页 {PAGE_SIZE} 条</div>
             <div className="news-list">
@@ -613,6 +873,9 @@ function App() {
                         <span className={item.has_ai_optimized ? 'meta-badge meta-badge-ai' : 'meta-badge meta-badge-plain'}>
                           {item.has_ai_optimized ? '已 AI 改写' : '未 AI 改写'}
                         </span>
+                        {item.chainthink_draft_published_at ? (
+                          <span className="meta-badge meta-badge-drafted">已推草稿</span>
+                        ) : null}
                         <span className="meta-badge">AI分：{item.ai_score ?? '—'}</span>
                       </div>
                     </div>
@@ -642,7 +905,10 @@ function App() {
                   <div className="detail-actions">
                     <button className="mini-btn" onClick={() => setIsChainthinkConfigOpen(true)}>配置 token</button>
                     <button className="mini-btn" onClick={() => setIsStyleGuideModalOpen(true)}>
-                      <PencilLine size={13} /> 编辑风格补充规则
+                      <PencilLine size={13} /> 编辑 ChainThink 风格优化规则
+                    </button>
+                    <button className="mini-btn" onClick={() => setIsScoringGuideModalOpen(true)}>
+                      <PencilLine size={13} /> 编辑 ChainThink 评分规则
                     </button>
                   </div>
                 </div>
@@ -678,9 +944,20 @@ function App() {
                   <article className="compare-card rewritten">
                     <div className="compare-card-head">
                       <h3>修改后</h3>
-                      <button className="draft-btn" onClick={handlePublishChainthinkDraft} disabled={isPublishingDraft}>
-                        {isPublishingDraft ? '发布中...' : '发布到 ChainThink 草稿'}
-                      </button>
+                      <div className="compare-card-actions">
+                        <button className="draft-btn" onClick={handlePublishChainthinkDraft} disabled={isPublishingDraft || Boolean(selected.chainthink_draft_published_at)}>
+                          {selected.chainthink_draft_published_at ? '已推草稿' : (isPublishingDraft ? '发布中...' : '发布草稿')}
+                        </button>
+                        <button className={autoDraftState.enabled ? 'auto-btn auto-btn-active' : 'auto-btn'} onClick={handleToggleAutoDraft} disabled={isSavingAutoDraft}>
+                          {isSavingAutoDraft ? '处理中...' : `全自动 ${autoDraftState.enabled ? '开' : '关'}`}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="auto-draft-status">
+                      <span>自动草稿轮询：每 {Math.round((autoDraftState.interval_ms || 30_000) / 1000)} 秒</span>
+                      <span>{autoDraftState.worker_running ? '正在检查' : '空闲'}</span>
+                      {autoDraftState.last_published_at ? <span>上次推送：{autoDraftState.last_published_at}</span> : null}
+                      {autoDraftState.last_error ? <span className="auto-draft-error">错误：{autoDraftState.last_error}</span> : null}
                     </div>
                     <div className="field"><label>标题</label><input className="editor-input" value={editedTitle} onChange={(e) => setEditedTitle(e.target.value)} placeholder="请输入改写后的标题" /></div>
                     <div className="field">
@@ -694,6 +971,12 @@ function App() {
                       />
                     </div>
                     <div className="field"><label>原文链接</label><a href={selected.original_link || selected.link} target="_blank" rel="noreferrer">{selected.original_link || selected.link || '—'}</a></div>
+                    {selected.chainthink_draft_published_at ? (
+                      <div className="field">
+                        <label>草稿推送状态</label>
+                        <div className="field-body">已于 {selected.chainthink_draft_published_at} 推送到 ChainThink 草稿{selected.chainthink_draft_publish_mode ? `（${selected.chainthink_draft_publish_mode}）` : ''}</div>
+                      </div>
+                    ) : null}
                     {selected.image_url ? (
                       <div className="field">
                         <label>修改后正文配图</label>
@@ -716,35 +999,58 @@ function App() {
         <div className="modal-backdrop" onClick={() => setIsStyleGuideModalOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>编辑 ChainThink 风格补充规则</h3>
+              <h3>编辑 ChainThink 风格优化规则</h3>
               <button className="icon-btn" onClick={() => setIsStyleGuideModalOpen(false)}>
                 <X size={16} />
               </button>
             </div>
-            <div className="modal-actions-top">
-              <button className="mini-btn" onClick={() => setIsStyleGuidePreviewOpen(true)}>
-                <Maximize2 size={13} /> 放大查看默认风格
-              </button>
-              <button className="mini-btn" onClick={handleResetStyleGuide} disabled={isSavingStyleGuide}>
-                {isSavingStyleGuide ? '处理中...' : '恢复默认'}
-              </button>
+            <div className="field compact-field">
+              <label>当前重写提示词</label>
+              <pre className="field-body pre-wrap style-guide-preview">{styleGuide.content || '加载中...'}</pre>
             </div>
             <div className="field compact-field">
-              <label>默认风格（只读预览）</label>
-              <pre className="field-body pre-wrap style-guide-preview">{styleGuide.base || '加载中...'}</pre>
-            </div>
-            <div className="field compact-field">
-              <label>自定义补充规则（override）</label>
+              <label>ChainThink 风格优化规则 / 重写提示词</label>
               <textarea
                 className="editor-input style-guide-textarea"
-                value={styleOverrideDraft}
-                placeholder={'例如：\n1. 标题尽量更短，控制在 18-26 字。\n2. 正文首句优先带时间与来源。\n3. AI/Agent 类新闻增加一句行业影响判断。'}
-                onChange={(e) => setStyleOverrideDraft(e.target.value)}
+                value={stylePromptDraft}
+                placeholder={'例如：\n1. 标题必须结论先行，保留最强事实信号。\n2. 正文统一改写成 ChainThink 成稿口吻，不保留原媒体语气。\n3. 优先保留数字、主体、动作、影响，不写空话。'}
+                onChange={(e) => setStylePromptDraft(e.target.value)}
               />
             </div>
             <div className="config-actions">
               <button className="refresh-btn" onClick={handleSaveStyleGuide} disabled={isSavingStyleGuide}>
-                <Save size={14} /> {isSavingStyleGuide ? '保存中...' : '保存风格补充规则'}
+                <Save size={14} /> {isSavingStyleGuide ? '保存中...' : '保存重写提示词'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isScoringGuideModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsScoringGuideModalOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>编辑 ChainThink 评分规则</h3>
+              <button className="icon-btn" onClick={() => setIsScoringGuideModalOpen(false)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="field compact-field">
+              <label>当前评分提示词</label>
+              <pre className="field-body pre-wrap style-guide-preview">{scoringGuide.content || '加载中...'}</pre>
+            </div>
+            <div className="field compact-field">
+              <label>ChainThink 评分规则 / 评分提示词</label>
+              <textarea
+                className="editor-input style-guide-textarea"
+                value={scoringPromptDraft}
+                placeholder={'例如：\n1. 优先判断主体重要性、事件确定性、市场影响。\n2. 没有明确信号的快讯不要给高分。\n3. 评分与 decision 必须严格一致。'}
+                onChange={(e) => setScoringPromptDraft(e.target.value)}
+              />
+            </div>
+            <div className="config-actions">
+              <button className="refresh-btn" onClick={handleSaveScoringGuide} disabled={isSavingScoringGuide}>
+                <Save size={14} /> {isSavingScoringGuide ? '保存中...' : '保存评分提示词'}
               </button>
             </div>
           </div>
@@ -816,19 +1122,6 @@ function App() {
         </div>
       )}
 
-      {isStyleGuidePreviewOpen && (
-        <div className="modal-backdrop" onClick={() => setIsStyleGuidePreviewOpen(false)}>
-          <div className="modal-card modal-card-lg" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>默认 ChainThink 风格规则</h3>
-              <button className="icon-btn" onClick={() => setIsStyleGuidePreviewOpen(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <pre className="field-body pre-wrap style-guide-preview-full">{styleGuide.base || '加载中...'}</pre>
-          </div>
-        </div>
-      )}
     </>
   )
 }

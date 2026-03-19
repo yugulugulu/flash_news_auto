@@ -8,10 +8,24 @@ import { promisify } from 'node:util'
 const app = express()
 const PORT = process.env.PORT || 8787
 const DATA_FILE = path.resolve('../kuaixun_v2.json')
+const DATA_LOCK_FILE = path.resolve('../.kuaixun_v2.lock')
 const MODEL_CONFIG_FILE = path.resolve('../model_config.json')
-const STYLE_FILE = path.resolve('../chainthink_style.md')
-const STYLE_OVERRIDE_FILE = path.resolve('../chainthink_style.override.md')
+const REWRITE_PROMPT_FILE = path.resolve('../template/rewrite_prompt.md')
+const SCORING_PROMPT_FILE = path.resolve('../template/scoring_prompt.md')
+const AUTO_DRAFT_STATE_FILE = path.resolve('../chainthink_auto_draft_state.json')
+const POLLERCTL_SCRIPT_FILE = path.resolve('../scripts/pollerctl.mjs')
 const ENV_LOCAL_FILE = path.resolve('.env.local')
+const AUTO_DRAFT_INTERVAL_MS = 30_000
+const MEDIA_PRUNE_THRESHOLD = 100
+const MEDIA_PRUNE_KEEP = 50
+const MEDIA_KEYS = ['theblockbeats', 'techflow', 'odaily']
+const MEDIA_LABELS = {
+  theblockbeats: '律动',
+  techflow: '深潮',
+  odaily: 'Odaily',
+}
+let autoDraftTimer = null
+let autoDraftTickRunning = false
 
 app.use(cors())
 const execFileAsync = promisify(execFile)
@@ -206,9 +220,230 @@ function loadData() {
   return JSON.parse(raw)
 }
 
+function saveData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2))
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try {
+    process.kill(Number(pid), 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function withDataLock(ownerLabel, fn) {
+  const owner = { pid: process.pid, task: ownerLabel, started_at: new Date().toISOString() }
+  while (true) {
+    try {
+      fs.writeFileSync(DATA_LOCK_FILE, JSON.stringify(owner), { flag: 'wx' })
+      break
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      let existing = null
+      try {
+        existing = JSON.parse(fs.readFileSync(DATA_LOCK_FILE, 'utf8'))
+      } catch {}
+      if (existing?.pid && pidAlive(existing.pid)) {
+        await sleep(100)
+        continue
+      }
+      try {
+        fs.unlinkSync(DATA_LOCK_FILE)
+      } catch {}
+    }
+  }
+
+  try {
+    return await fn()
+  } finally {
+    try {
+      fs.unlinkSync(DATA_LOCK_FILE)
+    } catch {}
+  }
+}
+
 function toTime(value) {
   const t = new Date(value).getTime()
   return Number.isNaN(t) ? 0 : t
+}
+
+function defaultAutoDraftState() {
+  return {
+    enabled: false,
+    interval_ms: AUTO_DRAFT_INTERVAL_MS,
+    worker_running: false,
+    last_checked_at: '',
+    last_published_at: '',
+    last_published_key: '',
+    last_error: '',
+    total_published: 0,
+  }
+}
+
+function loadAutoDraftState() {
+  const defaults = defaultAutoDraftState()
+  if (!fs.existsSync(AUTO_DRAFT_STATE_FILE)) return defaults
+  try {
+    const parsed = JSON.parse(fs.readFileSync(AUTO_DRAFT_STATE_FILE, 'utf8'))
+    return {
+      ...defaults,
+      ...parsed,
+      enabled: Boolean(parsed?.enabled),
+      interval_ms: AUTO_DRAFT_INTERVAL_MS,
+      worker_running: Boolean(parsed?.worker_running),
+      total_published: Number(parsed?.total_published || 0),
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function saveAutoDraftState(patch = {}) {
+  const next = {
+    ...loadAutoDraftState(),
+    ...patch,
+    interval_ms: AUTO_DRAFT_INTERVAL_MS,
+  }
+  fs.writeFileSync(AUTO_DRAFT_STATE_FILE, JSON.stringify(next, null, 2))
+  return next
+}
+
+function findItem(data, media, id) {
+  return (data?.[media]?.items || []).find((item) => String(item.id) === String(id)) || null
+}
+
+function buildDraftPayloadFromItem(item) {
+  return {
+    title: String(item.ai_title || item.title || '').trim(),
+    text: String(item.ai_body || item.content || item.summary || '').trim(),
+    link: String(item.original_link || item.link || '').trim(),
+    imageUrl: String(normalizeImageUrl(item) || '').trim(),
+  }
+}
+
+function isEligibleForAutoDraft(item) {
+  return (
+    typeof item?.ai_score === 'number' &&
+    item.ai_score >= 85 &&
+    Boolean(String(item.ai_title || '').trim()) &&
+    Boolean(String(item.ai_body || '').trim()) &&
+    !String(item.chainthink_draft_published_at || '').trim() &&
+    !String(item.chainthink_draft_publish_inflight_at || '').trim()
+  )
+}
+
+function getAutoDraftCandidate(data) {
+  const medias = ['theblockbeats', 'techflow', 'odaily']
+  const rows = []
+  for (const media of medias) {
+    for (const item of data?.[media]?.items || []) {
+      if (!isEligibleForAutoDraft(item)) continue
+      rows.push(item)
+    }
+  }
+  rows.sort((a, b) => toTime(b.published_at) - toTime(a.published_at))
+  return rows[0] || null
+}
+
+async function reserveDraftPublish(media, id, mode) {
+  return await withDataLock(`draft:reserve:${mode}`, async () => {
+    const data = loadData()
+    const item = findItem(data, media, id)
+    if (!item) return null
+    if (String(item.chainthink_draft_published_at || '').trim()) return null
+    if (String(item.chainthink_draft_publish_inflight_at || '').trim()) return null
+    item.chainthink_draft_publish_inflight_at = new Date().toISOString()
+    item.chainthink_draft_publish_mode = mode
+    item.chainthink_draft_publish_error = ''
+    saveData(data)
+    return {
+      media: item.media,
+      id: String(item.id || ''),
+      ...buildDraftPayloadFromItem(item),
+    }
+  })
+}
+
+async function finishDraftPublish(media, id, mode, result) {
+  return await withDataLock(`draft:finish:${mode}`, async () => {
+    const data = loadData()
+    const item = findItem(data, media, id)
+    if (!item) return null
+    delete item.chainthink_draft_publish_inflight_at
+    if (result.ok) {
+      item.chainthink_draft_published_at = new Date().toISOString()
+      item.chainthink_draft_publish_mode = mode
+      item.chainthink_draft_publish_error = ''
+    } else {
+      item.chainthink_draft_publish_error = String(result.message || '')
+    }
+    saveData(data)
+    return item
+  })
+}
+
+async function runAutoDraftTick() {
+  const state = loadAutoDraftState()
+  if (!state.enabled || autoDraftTickRunning) return
+  autoDraftTickRunning = true
+  saveAutoDraftState({ worker_running: true, last_checked_at: new Date().toISOString(), last_error: '' })
+  try {
+    const data = loadData()
+    const candidate = getAutoDraftCandidate(data)
+    if (!candidate) {
+      saveAutoDraftState({ worker_running: false, last_checked_at: new Date().toISOString() })
+      return
+    }
+    const reserved = await reserveDraftPublish(candidate.media, candidate.id, 'auto')
+    if (!reserved) {
+      saveAutoDraftState({ worker_running: false, last_checked_at: new Date().toISOString() })
+      return
+    }
+    await publishChainthinkDraft(reserved)
+    await finishDraftPublish(reserved.media, reserved.id, 'auto', { ok: true })
+    const current = loadAutoDraftState()
+    saveAutoDraftState({
+      worker_running: false,
+      last_checked_at: new Date().toISOString(),
+      last_published_at: new Date().toISOString(),
+      last_published_key: `${reserved.media}:${reserved.id}`,
+      total_published: Number(current.total_published || 0) + 1,
+      last_error: '',
+    })
+  } catch (error) {
+    saveAutoDraftState({
+      worker_running: false,
+      last_checked_at: new Date().toISOString(),
+      last_error: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    autoDraftTickRunning = false
+  }
+}
+
+function ensureAutoDraftWorker() {
+  const state = loadAutoDraftState()
+  if (state.enabled) {
+    if (!autoDraftTimer) {
+      autoDraftTimer = setInterval(() => {
+        void runAutoDraftTick()
+      }, AUTO_DRAFT_INTERVAL_MS)
+      void runAutoDraftTick()
+    }
+    return
+  }
+  if (autoDraftTimer) {
+    clearInterval(autoDraftTimer)
+    autoDraftTimer = null
+  }
+  if (state.worker_running) saveAutoDraftState({ worker_running: false })
 }
 
 function ensureModelConfig() {
@@ -292,21 +527,66 @@ async function testDoubaoConnection(cfg) {
 }
 
 function loadStyleGuide() {
-  const base = fs.readFileSync(STYLE_FILE, 'utf8')
-  const override = fs.existsSync(STYLE_OVERRIDE_FILE) ? fs.readFileSync(STYLE_OVERRIDE_FILE, 'utf8') : ''
-  const effective = override.trim() ? `${base}\n\n# 用户自定义补充规则（override）\n\n${override.trim()}` : base
-  return { base, override, effective }
+  const content = fs.existsSync(REWRITE_PROMPT_FILE) ? fs.readFileSync(REWRITE_PROMPT_FILE, 'utf8') : ''
+  return { content }
 }
 
-function saveStyleGuideOverride(input) {
-  const next = String(input?.override || '')
-  fs.writeFileSync(STYLE_OVERRIDE_FILE, next)
+function saveStyleGuide(input) {
+  const next = String(input?.content || '')
+  fs.writeFileSync(REWRITE_PROMPT_FILE, next)
   return loadStyleGuide()
 }
 
-function resetStyleGuideOverride() {
-  try { fs.unlinkSync(STYLE_OVERRIDE_FILE) } catch {}
-  return loadStyleGuide()
+function loadScoringGuide() {
+  const content = fs.existsSync(SCORING_PROMPT_FILE) ? fs.readFileSync(SCORING_PROMPT_FILE, 'utf8') : ''
+  return { content }
+}
+
+function saveScoringGuide(input) {
+  const next = String(input?.content || '')
+  fs.writeFileSync(SCORING_PROMPT_FILE, next)
+  return loadScoringGuide()
+}
+
+async function runPollerctl(args = []) {
+  const { stdout } = await execFileAsync(process.execPath, [POLLERCTL_SCRIPT_FILE, ...args], {
+    cwd: path.resolve('..'),
+    maxBuffer: 10 * 1024 * 1024,
+  })
+  return String(stdout || '').trim()
+}
+
+async function loadMediaControlStatus() {
+  const raw = await runPollerctl(['status-json'])
+  const parsed = raw ? JSON.parse(raw) : {}
+  const medias = {}
+  for (const media of MEDIA_KEYS) {
+    const entry = parsed?.medias?.[media] || {}
+    medias[media] = {
+      key: media,
+      label: MEDIA_LABELS[media] || media,
+      enabled: Boolean(entry.enabled),
+      running: Boolean(entry.running),
+      pid: String(entry.pid || ''),
+      last_success_at: String(entry?.runtime?.worker?.last_success_at || ''),
+      last_error: String(entry?.runtime?.worker?.last_error || ''),
+      last_result: String(entry?.runtime?.worker?.last_result || ''),
+      interval_ms: Number(entry?.runtime?.interval_ms || 30_000),
+    }
+  }
+  return {
+    pipeline: {
+      running: Boolean(parsed?.pipeline?.running),
+      pid: String(parsed?.pipeline?.pid || ''),
+    },
+    medias,
+  }
+}
+
+async function setMediaControl(media, enabled) {
+  if (!MEDIA_KEYS.includes(media)) throw new Error('media not found')
+  await runPollerctl(['set-media', media, enabled ? 'on' : 'off'])
+  return await loadMediaControlStatus()
 }
 
 function normalizeImageUrl(item) {
@@ -314,6 +594,35 @@ function normalizeImageUrl(item) {
   if (typeof raw === 'string') return raw
   if (raw == null) return ''
   return String(raw)
+}
+
+async function pruneMediaItems(media) {
+  if (!MEDIA_KEYS.includes(media)) throw new Error('media not found')
+  return await withDataLock(`prune:${media}`, async () => {
+    const data = loadData()
+    const items = Array.isArray(data?.[media]?.items) ? data[media].items : []
+    const before = items.length
+    if (before <= MEDIA_PRUNE_THRESHOLD) {
+      return {
+        media,
+        before,
+        after: before,
+        removed: 0,
+        threshold: MEDIA_PRUNE_THRESHOLD,
+        keep: MEDIA_PRUNE_KEEP,
+      }
+    }
+    data[media].items = items.slice(0, MEDIA_PRUNE_KEEP)
+    saveData(data)
+    return {
+      media,
+      before,
+      after: data[media].items.length,
+      removed: before - data[media].items.length,
+      threshold: MEDIA_PRUNE_THRESHOLD,
+      keep: MEDIA_PRUNE_KEEP,
+    }
+  })
 }
 
 function getPendingItems() {
@@ -358,6 +667,8 @@ function getPendingItems() {
           ai_title: aiTitle,
           ai_body: aiBody,
           has_ai_optimized: hasAiOptimized,
+          chainthink_draft_published_at: String(item.chainthink_draft_published_at || ''),
+          chainthink_draft_publish_mode: String(item.chainthink_draft_publish_mode || ''),
         }
       })
     result[media] = items
@@ -418,22 +729,88 @@ app.get('/api/style-guide', (_req, res) => {
   }
 })
 
-app.post('/api/style-guide/override', (req, res) => {
+app.post('/api/style-guide', (req, res) => {
   try {
-    const saved = saveStyleGuideOverride(req.body || {})
-    res.json({ ok: true, message: '风格补充规则保存成功', data: saved })
+    const saved = saveStyleGuide(req.body || {})
+    res.json({ ok: true, message: '重写提示词保存成功', data: saved })
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
   }
 })
 
-app.post('/api/style-guide/reset', (_req, res) => {
+app.post('/api/style-guide/override', (req, res) => {
   try {
-    const reset = resetStyleGuideOverride()
-    res.json({ ok: true, message: '已恢复默认风格规则', data: reset })
+    const saved = saveStyleGuide({ content: String(req.body?.override || '') })
+    res.json({ ok: true, message: '重写提示词保存成功', data: saved })
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
   }
+})
+
+app.get('/api/scoring-guide', (_req, res) => {
+  try {
+    res.json({ ok: true, data: loadScoringGuide() })
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/scoring-guide', (req, res) => {
+  try {
+    const saved = saveScoringGuide(req.body || {})
+    res.json({ ok: true, message: '评分提示词保存成功', data: saved })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/media-control', async (_req, res) => {
+  try {
+    const data = await loadMediaControlStatus()
+    res.json({ ok: true, data })
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/media-control/:media', async (req, res) => {
+  try {
+    const media = String(req.params.media || '').trim()
+    const enabled = Boolean(req.body?.enabled)
+    const data = await setMediaControl(media, enabled)
+    res.json({ ok: true, message: enabled ? '已开启媒体抓取' : '已关闭媒体抓取', data })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/media-control/:media/prune', async (req, res) => {
+  try {
+    const media = String(req.params.media || '').trim()
+    const result = await pruneMediaItems(media)
+    const label = MEDIA_LABELS[media] || media
+    const message = result.removed > 0
+      ? `${label} 已清理 ${result.removed} 条旧快讯`
+      : `${label} 当前不足 ${MEDIA_PRUNE_THRESHOLD} 条，无需清理`
+    res.json({ ok: true, message, data: result })
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/chainthink/auto-draft', (_req, res) => {
+  res.json({ ok: true, data: loadAutoDraftState() })
+})
+
+app.post('/api/chainthink/auto-draft', (req, res) => {
+  const enabled = Boolean(req.body?.enabled)
+  const saved = saveAutoDraftState({
+    enabled,
+    worker_running: false,
+    last_error: '',
+  })
+  ensureAutoDraftWorker()
+  res.json({ ok: true, message: enabled ? '已开启全自动草稿' : '已关闭全自动草稿', data: saved })
 })
 
 
@@ -459,13 +836,41 @@ app.post('/api/chainthink/config', (req, res) => {
 app.post('/api/chainthink/draft', async (req, res) => {
   try {
     const payload = req.body || {}
-    const response = await publishChainthinkDraft(payload)
+    const media = String(payload.media || '').trim()
+    const id = String(payload.id || '').trim()
+    let reserved = null
+    if (media && id) {
+      reserved = await reserveDraftPublish(media, id, 'manual')
+      if (!reserved) {
+        return res.status(400).json({ ok: false, message: '该快讯已推送草稿或正在推送中' })
+      }
+    }
+    const response = await publishChainthinkDraft({
+      ...(reserved || payload),
+      title: String(payload.title || reserved?.title || '').trim(),
+      text: String(payload.text || reserved?.text || '').trim(),
+      link: String(payload.link || reserved?.link || '').trim(),
+      imageUrl: String(payload.imageUrl || reserved?.imageUrl || '').trim(),
+    })
+    if (media && id) {
+      await finishDraftPublish(media, id, 'manual', { ok: true })
+    }
     res.json({ ok: true, message: '已发布到 ChainThink 草稿', data: response })
   } catch (error) {
+    const payload = req.body || {}
+    const media = String(payload.media || '').trim()
+    const id = String(payload.id || '').trim()
+    if (media && id) {
+      await finishDraftPublish(media, id, 'manual', {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) })
   }
 })
 
 app.listen(PORT, () => {
+  ensureAutoDraftWorker()
   console.log(`flash-news dashboard api running on http://localhost:${PORT}`)
 })
