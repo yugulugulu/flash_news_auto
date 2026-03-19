@@ -24,7 +24,7 @@ flash_news_auto/
 │   ├── ai_score_pending.mjs       # 待评分快讯的 AI 评分脚本
 │   └── ai_rewrite_pending.mjs     # 待改写快讯的 AI 改写脚本
 ├── pollerctl                      # 轮询控制脚本入口（启动/停止/状态/日志）
-├── kuaixun_v2.json                # 抓取与筛选后的数据文件
+├── kuaixun_v2.json                # 仓库默认空数据文件
 ├── model_config.example.json      # 模型配置示例
 ├── template/                      # 提示词模板
 │   ├── scoring_prompt.md          # 综合精选评分提示词
@@ -97,6 +97,7 @@ cp model_config.example.json model_config.json
 
 默认数据文件：
 - `kuaixun_v2.json`
+- 如果本地存在 `kuaixun_v2.local.json`，脚本与 Dashboard 会优先读写本地文件，不影响仓库里的空数据文件
 
 如果首次运行不存在，脚本会自动创建。
 

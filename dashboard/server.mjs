@@ -4,10 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { loadDataFile, saveDataFile } from '../scripts/data_file.mjs'
 
 const app = express()
 const PORT = process.env.PORT || 8787
-const DATA_FILE = path.resolve('../kuaixun_v2.json')
 const DATA_LOCK_FILE = path.resolve('../.kuaixun_v2.lock')
 const MODEL_CONFIG_FILE = path.resolve('../model_config.json')
 const REWRITE_PROMPT_FILE = path.resolve('../template/rewrite_prompt.md')
@@ -216,12 +216,11 @@ async function uploadChainthinkCoverFromUrl(imageUrl) {
 }
 
 function loadData() {
-  const raw = fs.readFileSync(DATA_FILE, 'utf8')
-  return JSON.parse(raw)
+  return loadDataFile()
 }
 
 function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2))
+  saveDataFile(data)
 }
 
 function sleep(ms) {

@@ -3,21 +3,21 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { loadDataFile, saveDataFile } from './data_file.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const BASE = path.resolve(__dirname, '..')
-const DATA_FILE = path.join(BASE, 'kuaixun_v2.json')
 const DATA_LOCK_FILE = path.join(BASE, '.kuaixun_v2.lock')
 const MODEL_CONFIG_FILE = path.join(BASE, 'model_config.json')
 const REWRITE_PROMPT_FILE = path.join(BASE, 'template', 'rewrite_prompt.md')
 
 function load() {
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
+  return loadDataFile()
 }
 
 function save(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2))
+  saveDataFile(data)
 }
 
 function sleep(ms) {

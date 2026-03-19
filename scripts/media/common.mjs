@@ -2,11 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
+import { createEmptyDataStore, loadDataFile, saveDataFile, resolveDataFile } from '../data_file.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const BASE = path.resolve(__dirname, '../..')
-const OUT_FILE = path.join(BASE, 'kuaixun_v2.json')
 const DATA_LOCK_FILE = path.join(BASE, '.kuaixun_v2.lock')
 const LIMIT = readPositiveInt(process.env.POLL_FETCH_LIMIT, 5)
 
@@ -52,22 +52,19 @@ function toBJT(tsMs) {
 }
 
 function ensureStore() {
-  if (!fs.existsSync(OUT_FILE)) {
-    fs.writeFileSync(OUT_FILE, JSON.stringify({
-      theblockbeats: { items: [] },
-      techflow: { items: [] },
-      odaily: { items: [] },
-    }, null, 2))
+  const target = resolveDataFile()
+  if (!fs.existsSync(target)) {
+    fs.writeFileSync(target, JSON.stringify(createEmptyDataStore(), null, 2))
   }
 }
 
 function loadStore() {
   ensureStore()
-  return JSON.parse(fs.readFileSync(OUT_FILE, 'utf8'))
+  return loadDataFile()
 }
 
 function saveStore(store) {
-  fs.writeFileSync(OUT_FILE, JSON.stringify(store, null, 2))
+  saveDataFile(store)
 }
 
 function keyOf(item) {
