@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+const IS_WINDOWS = process.platform === 'win32'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -21,13 +22,38 @@ async function execFileSafe(file, args, options = {}) {
   }
 }
 
-async function findListeningPids(port) {
+function uniqueStrings(values) {
+  return values.filter((value, index, array) => array.indexOf(value) === index)
+}
+
+async function findListeningPidsUnix(port) {
   const { stdout } = await execFileSafe('lsof', [`-tiTCP:${port}`, '-sTCP:LISTEN'])
-  return String(stdout || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((value, index, array) => array.indexOf(value) === index)
+  return uniqueStrings(
+    String(stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  )
+}
+
+async function findListeningPidsWindows(port) {
+  const { stdout } = await execFileSafe('netstat', ['-ano', '-p', 'tcp'])
+  const target = `:${port}`
+  return uniqueStrings(
+    String(stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && line.startsWith('TCP'))
+      .filter((line) => line.includes(target))
+      .filter((line) => /\sLISTENING\s/i.test(line))
+      .map((line) => line.split(/\s+/).at(-1) || '')
+      .filter(Boolean),
+  )
+}
+
+async function findListeningPids(port) {
+  if (IS_WINDOWS) return await findListeningPidsWindows(port)
+  return await findListeningPidsUnix(port)
 }
 
 async function findBusyPorts(ports) {
@@ -37,7 +63,21 @@ async function findBusyPorts(ports) {
   return Object.fromEntries(entries)
 }
 
+async function signalPidWindows(pid, force) {
+  const args = ['/PID', String(pid), '/T']
+  if (force) args.push('/F')
+  await execFileSafe('taskkill', args)
+}
+
 async function signalPids(pids, signal) {
+  const force = signal === 'SIGKILL'
+  if (IS_WINDOWS) {
+    for (const pid of pids) {
+      await signalPidWindows(pid, force)
+    }
+    return
+  }
+
   for (const pid of pids) {
     try {
       process.kill(Number(pid), signal)
@@ -51,8 +91,8 @@ export async function clearListeningPorts(ports, label = 'ports') {
   if (!initialPids.length) return { killed: [], remaining: [] }
 
   console.log(`[${label}] clearing listeners on ports ${ports.join(', ')}`)
-  await signalPids(initialPids, 'SIGTERM')
-  await sleep(800)
+  await signalPids(initialPids, IS_WINDOWS ? 'SIGKILL' : 'SIGTERM')
+  await sleep(IS_WINDOWS ? 500 : 800)
 
   const secondPass = await findBusyPorts(ports)
   const remaining = [...new Set(Object.values(secondPass).flat())]
